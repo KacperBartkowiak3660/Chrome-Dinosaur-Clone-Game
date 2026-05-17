@@ -124,118 +124,213 @@ class Obstacle
     public:
         std::optional<sf::Sprite> obstacleSprite;
         sf::FloatRect obstacleBounds{{0.f, 0.f}, {0.f, 0.f}};
-        Obstacle(sf::Texture& texture)
+
+        //animation atributes:
+        std::vector<sf::IntRect> frames;
+        int currentFrame = 0;
+        sf::Time frameTimer = sf::Time::Zero;
+        sf::Time timePerFrame = sf::seconds(0.12f);
+
+        // hitbox settings:
+        float shrinkX = 0.f;
+        float shrinkY = 0.f;
+
+        //base constructor:
+        Obstacle(sf::Texture& texture, float windowSize_x, float groundOffset)
         {
             obstacleSprite.emplace(texture);
             obstacleSprite->setPosition(sf::Vector2f(windowSize_x, groundOffset));
+        }
+
+        //Virtual destructor
+        virtual ~Obstacle() = default;
+
+        //helper function
+        void setupFrames(int frameWidth, int frameHeight, int totalFrames)
+        {
+            for(int i = 0; i < totalFrames; i++)
+            {
+                frames.push_back(sf::IntRect(sf::Vector2i(i * frameWidth, 0), sf::Vector2i(frameWidth, frameHeight)));
+            }
+            if(obstacleSprite && !frames.empty())
+            {
+                obstacleSprite->setTextureRect(frames[0]);
+            }
+        }
+};
+
+class CactusSmall : public Obstacle
+{
+    public:
+        CactusSmall(sf::Texture& texture, float windowSize_x, float groundOffset)
+        : Obstacle(texture, windowSize_x, groundOffset - 10.f)
+        {
+            obstacleSprite->setScale(sf::Vector2(2.f, 2.f));
+
+            timePerFrame = sf::seconds(0.18f); // Slower animation
+            // Assuming sheet has 4 frames, each 48x48
+            setupFrames(150, 52, 4);
+
+            // hitbox setting:
+            shrinkX = 230.f;
+            shrinkY = 200.f;
+        }
+};
+
+class CactusLarge : public Obstacle
+{
+    public:
+        CactusLarge(sf::Texture& texture, float windowSize_x, float groundOffset)
+        : Obstacle(texture, windowSize_x, groundOffset - 250.f)
+        {
+            obstacleSprite->setScale(sf::Vector2(4.f, 4.f));
+
+            timePerFrame = sf::seconds(0.10f); // Faster animation
+            setupFrames(156, 156, 14);
+
+            // hitbox setting:
+            shrinkX = 500.f;
+            shrinkY = 600.f;
+        }
+};
+
+//flying class ex:
+class FlyingObstacle : public Obstacle
+{
+    public:
+
+        FlyingObstacle(sf::Texture& texture, float windowSize_x, float finalYPosition)
+        : Obstacle(texture, windowSize_x, finalYPosition) // offset - 120
+        {
+            obstacleSprite->setScale(sf::Vector2(2.f, 2.f));
+
+            timePerFrame = sf::seconds(0.08f); //Very fast
+            setupFrames(87, 87, 11);
+
+            // hitbox setting:
+            shrinkX = 80.f;
+            shrinkY = 160.f;
         }
 };
 
 class Obstacles
 {
     public:
-        std::vector<Obstacle> obstacles;
+        // Changed to a vector of unique_ptrs to safely handle derived classes
+        std::vector<std::unique_ptr<Obstacle>> obstacles;
 
-        //sf::Time spawnTimer;
         float distanceTracker{0.f};
         float nextSpawnDistance{0.f};
-
+        
         sf::Texture obstacleTexture_1;
         sf::Texture obstacleTexture_2;
         sf::Texture obstacleTexture_3;
         int randomNumber{0};
 
-        Obstacles()
-        : distanceTracker(0.f)
+        Obstacles() : distanceTracker(0.f)
         {
-            obstacles.reserve(5);
-
-            // Set an initial random distance target (e.g., between 400 and 900 pixels)
             nextSpawnDistance = static_cast<float>((rand() % 500) + 400);
 
-            if(obstacleTexture_1.loadFromFile("C:/Users/bkacp/Desktop/CDG/Assets/Cactus1.png"))
-            {
-                std::cout << "Obstacle 1 loaded successfully!" << std::endl;
-            }
-            if(obstacleTexture_2.loadFromFile("C:/Users/bkacp/Desktop/CDG/Assets/Cactus2.png"))
-            {
-                std::cout << "Obstacle 2 loaded successfully!" << std::endl;
-            }
-            if(obstacleTexture_3.loadFromFile("C:/Users/bkacp/Desktop/CDG/Assets/Cactus3.png"))
-            {
-                std::cout << "Obstacle 3 loaded successfully!" << std::endl;
-            }
+            // (Keep your standard texture loadFromFile blocks here...)
+            obstacleTexture_1.loadFromFile("C:/Users/bkacp/Desktop/CDG/Assets/Skeleton.png");
+            obstacleTexture_2.loadFromFile("C:/Users/bkacp/Desktop/CDG/Assets/Slime.png");
+            obstacleTexture_3.loadFromFile("C:/Users/bkacp/Desktop/CDG/Assets/Bat.png");
         }
 
         void update(sf::Time& deltaTime)
         {
-            if(playerDead == false)
+            if (playerDead == false)
             {
                 distanceTracker += gameSpeed * deltaTime.asSeconds() * 60.f;
 
-                if(distanceTracker >= nextSpawnDistance)
+                if (distanceTracker >= nextSpawnDistance)
                 {
                     randomNumber = (rand() % 3) + 1;
-                    if(randomNumber == 1)
+                    
+                    // Instantiate the specific derived object using std::make_unique
+                    if(randomNumber == 1) 
+                        obstacles.push_back(std::make_unique<CactusSmall>(obstacleTexture_1, windowSize_x, groundOffset));
+                    if(randomNumber == 2) 
+                        obstacles.push_back(std::make_unique<CactusLarge>(obstacleTexture_2, windowSize_x, groundOffset));
+                    if(randomNumber == 3) 
                     {
-                        obstacles.emplace_back(Obstacle(obstacleTexture_1));
-                    }
-                    if(randomNumber == 2)
-                    {
-                        obstacles.emplace_back(Obstacle(obstacleTexture_2));
-                    }
-                    if(randomNumber == 3)
-                    {
-                        obstacles.emplace_back(Obstacle(obstacleTexture_3));
-                    }
+                        float randomAirOffset = static_cast<float>((rand() % 200) + 120);
+                        float randomFlyingHeight = groundOffset - randomAirOffset;
 
+                        obstacles.push_back(std::make_unique<FlyingObstacle>(obstacleTexture_3, windowSize_x, randomFlyingHeight));
+                    }
                     distanceTracker = 0.f;
-
                     nextSpawnDistance = static_cast<float>((rand() % 600) + 400);
                 }
             }
 
             if(playerDead == false)
             {
-                for(int i = 0; i <obstacles.size(); i++)
+                for(int i = 0; i < obstacles.size(); i++)
                 {
-                    if(!obstacles[i].obstacleSprite) continue;
-                    obstacles[i].obstacleBounds = obstacles[i].obstacleSprite->getGlobalBounds();
-                    sf::Vector2f boundsSize = obstacles[i].obstacleBounds.size;
-                    obstacles[i].obstacleBounds.size = {boundsSize.x - 10.f, boundsSize.y};
-                    obstacles[i].obstacleSprite->move(sf::Vector2f(-1*gameSpeed, 0.f));
+                    // Remember to use -> instead of . since obstacles[i] is now a pointer!
+                    if(!obstacles[i]->obstacleSprite) continue;
 
-                    if(obstacles[i].obstacleSprite->getPosition().x < -150.f)
+                    // 1. Process unique object animation frames
+                    if (!obstacles[i]->frames.empty())
                     {
-                        std::vector<Obstacle>::iterator obstacleIter = obstacles.begin() + i;
-                        obstacles.erase(obstacleIter);
-                        i--;
+                        obstacles[i]->frameTimer += deltaTime;
+                        if (obstacles[i]->frameTimer >= obstacles[i]->timePerFrame)
+                        {
+                            obstacles[i]->currentFrame = (obstacles[i]->currentFrame + 1) % obstacles[i]->frames.size();
+                            obstacles[i]->obstacleSprite->setTextureRect(obstacles[i]->frames[obstacles[i]->currentFrame]);
+                            obstacles[i]->frameTimer -= obstacles[i]->timePerFrame;
+                        }
+                    }
+
+                    // 2. Physics & Collisions
+                    obstacles[i]->obstacleBounds = obstacles[i]->obstacleSprite->getGlobalBounds();
+                    sf::Vector2f boundsSize = obstacles[i]->obstacleBounds.size;
+                    obstacles[i]->obstacleBounds.size = {boundsSize.x - 10.f, boundsSize.y};
+                    
+                    sf::FloatRect globalBounds = obstacles[i]->obstacleSprite->getGlobalBounds();
+                    
+                    float sX = obstacles[i]->shrinkX;
+                    float sY = obstacles[i]->shrinkY;
+
+                    obstacles[i]->obstacleBounds = sf::FloatRect(
+                        sf::Vector2f(globalBounds.position.x + (sX / 2.f), globalBounds.position.y + (sY / 2.f)),
+                        sf::Vector2f(globalBounds.size.x - sX, globalBounds.size.y - sY)
+                    );
+
+                    obstacles[i]->obstacleSprite->move(sf::Vector2f(-1 * gameSpeed, 0.f));
+                    
+                    if(obstacles[i]->obstacleSprite->getPosition().x < -300.f)
+                    {
+                        // unique_ptr automatically cleans up the allocated memory when erased
+                        obstacles.erase(obstacles.begin() + i);
+                        i--; 
                     }
                 }
             }
 
             if(playerDead == true)
             {
-                for(auto& obstacles : obstacles)
+                for(auto& obs : obstacles)
                 {
-                    if(obstacles.obstacleSprite)
-                        obstacles.obstacleSprite->move(sf::Vector2f(0.f, 0.f));
+                    if(obs->obstacleSprite)
+                        obs->obstacleSprite->move(sf::Vector2f(0.f, 0.f));
                 }
             }
         }
 
         void drawTo(sf::RenderWindow& window)
         {
-            for(auto& obstacles : obstacles)
+            for(auto& obs : obstacles)
             {
-                if(obstacles.obstacleSprite)
-                    window.draw(*obstacles.obstacleSprite);
+                if(obs->obstacleSprite)
+                    window.draw(*obs->obstacleSprite);
             }
         }
 
         void reset()
         {
-            obstacles.clear();
+            obstacles.clear(); // Safely clears pointers and destroys instances
             distanceTracker = 0.f;
             nextSpawnDistance = static_cast<float>((rand() % 500) + 400);
         }
@@ -276,7 +371,7 @@ class Knight
             }
         }
 
-        void update(sf::Time& deltaTime, std::vector<Obstacle>& obstacles)
+        void update(sf::Time& deltaTime, std::vector<std::unique_ptr<Obstacle>>& obstacles)
         {
             knightPos = knight->getPosition();
             knightBounds = knight->getGlobalBounds();
@@ -293,9 +388,9 @@ class Knight
             timeTracker += deltaTime;
 
 
-            for(auto& obstacles: obstacles)
+            for(const auto& obstacles: obstacles)
             {
-                if(knightBounds.findIntersection(obstacles.obstacleBounds).has_value())
+                if(knightBounds.findIntersection(obstacles->obstacleBounds).has_value())
                 {
                     playerDead = true;
                 }
