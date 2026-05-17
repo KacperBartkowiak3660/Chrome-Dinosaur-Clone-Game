@@ -13,6 +13,7 @@
 const unsigned int windowSize_x = 1000;
 const unsigned int windowSize_y = 500;
 const unsigned int groundOffset = windowSize_y - 150.f;
+float groundLevel = windowSize_y - 175.f;
 int gameSpeed = 8;
 bool playerDead = false;
 bool playDeadSound = false; 
@@ -71,11 +72,11 @@ class SoundManager
 
         SoundManager()
         {
-            if(dieBuffer.loadFromFile("assets/die.wav"))
+            if(dieBuffer.loadFromFile("C:/Users/bkacp/Desktop/CDG/Assets/die.wav"))
                 dieSound.emplace(dieBuffer);
-            if(jumpBuffer.loadFromFile("assets/jump.wav"))
+            if(jumpBuffer.loadFromFile("C:/Users/bkacp/Desktop/CDG/Assets/jump.wav"))
                 jumpSound.emplace(jumpBuffer);
-            if(pointBuffer.loadFromFile("assets/point.wav"))
+            if(pointBuffer.loadFromFile("C:/Users/bkacp/Desktop/CDG/Assets/point.wav"))
                 pointSound.emplace(pointBuffer);
         }
 };
@@ -135,16 +136,22 @@ class Obstacles
     public:
         std::vector<Obstacle> obstacles;
 
-        sf::Time spawnTimer;
+        //sf::Time spawnTimer;
+        float distanceTracker{0.f};
+        float nextSpawnDistance{0.f};
+
         sf::Texture obstacleTexture_1;
         sf::Texture obstacleTexture_2;
         sf::Texture obstacleTexture_3;
         int randomNumber{0};
 
         Obstacles()
-        :spawnTimer(sf::Time::Zero)
+        : distanceTracker(0.f)
         {
             obstacles.reserve(5);
+
+            // Set an initial random distance target (e.g., between 400 and 900 pixels)
+            nextSpawnDistance = static_cast<float>((rand() % 500) + 400);
 
             if(obstacleTexture_1.loadFromFile("C:/Users/bkacp/Desktop/CDG/Assets/Cactus1.png"))
             {
@@ -162,23 +169,30 @@ class Obstacles
 
         void update(sf::Time& deltaTime)
         {
-            spawnTimer += deltaTime;
-            if(spawnTimer.asSeconds() > 0.5f + gameSpeed/8)
+            if(playerDead == false)
             {
-                randomNumber = (rand() % 3) + 1;
-                if(randomNumber == 1)
+                distanceTracker += gameSpeed * deltaTime.asSeconds() * 60.f;
+
+                if(distanceTracker >= nextSpawnDistance)
                 {
-                    obstacles.emplace_back(Obstacle(obstacleTexture_1));
+                    randomNumber = (rand() % 3) + 1;
+                    if(randomNumber == 1)
+                    {
+                        obstacles.emplace_back(Obstacle(obstacleTexture_1));
+                    }
+                    if(randomNumber == 2)
+                    {
+                        obstacles.emplace_back(Obstacle(obstacleTexture_2));
+                    }
+                    if(randomNumber == 3)
+                    {
+                        obstacles.emplace_back(Obstacle(obstacleTexture_3));
+                    }
+
+                    distanceTracker = 0.f;
+
+                    nextSpawnDistance = static_cast<float>((rand() % 600) + 400);
                 }
-                if(randomNumber == 2)
-                {
-                    obstacles.emplace_back(Obstacle(obstacleTexture_2));
-                }
-                if(randomNumber == 3)
-                {
-                    obstacles.emplace_back(Obstacle(obstacleTexture_3));
-                }
-                spawnTimer = sf::Time::Zero;
             }
 
             if(playerDead == false)
@@ -190,10 +204,12 @@ class Obstacles
                     sf::Vector2f boundsSize = obstacles[i].obstacleBounds.size;
                     obstacles[i].obstacleBounds.size = {boundsSize.x - 10.f, boundsSize.y};
                     obstacles[i].obstacleSprite->move(sf::Vector2f(-1*gameSpeed, 0.f));
+
                     if(obstacles[i].obstacleSprite->getPosition().x < -150.f)
                     {
                         std::vector<Obstacle>::iterator obstacleIter = obstacles.begin() + i;
                         obstacles.erase(obstacleIter);
+                        i--;
                     }
                 }
             }
@@ -219,7 +235,9 @@ class Obstacles
 
         void reset()
         {
-            obstacles.erase(obstacles.begin(), obstacles.end());
+            obstacles.clear();
+            distanceTracker = 0.f;
+            nextSpawnDistance = static_cast<float>((rand() % 500) + 400);
         }
 };
 
@@ -232,17 +250,22 @@ class Knight
         sf::Texture knightTex;
         sf::FloatRect knightBounds;
         SoundManager soundManager;
-        std::array<sf::IntRect, 6> frames;
+        std::array<sf::IntRect, 8> frames;
         sf::Time timeTracker;
         int animationCounter{0};
+        bool dieSoundPlayed = false;
 
         Knight()
         {
             if(knightTex.loadFromFile("C:/Users/bkacp/Desktop/CDG/Assets/PlayerSpriteSheet.png"))
             {
+                
                 knight.emplace(knightTex);
+
+                knight->setScale(sf::Vector2f(2, 2));//rozmiar
+
                 for(int i = 0; i < frames.size(); i++){
-                    frames[i] = sf::IntRect(sf::Vector2i(i * 90, 0), sf::Vector2i(90, 95));
+                    frames[i] = sf::IntRect(sf::Vector2i(i * 96, 0), sf::Vector2i(96, 84));
                 }
                 knight->setTextureRect(frames[0]);
                 knightPos = knight->getPosition();
@@ -258,8 +281,18 @@ class Knight
             knightPos = knight->getPosition();
             knightBounds = knight->getGlobalBounds();
             sf::Vector2f boundsSize = knightBounds.size;
-            knightBounds = sf::FloatRect(knightBounds.position, {boundsSize.x - 10.f, boundsSize.y - 15.f});
+
+            float shrinkX = 120.f;
+            float shrinkY = 80.f;
+
+            knightBounds = sf::FloatRect(
+                sf::Vector2f(knightBounds.position.x + (shrinkX / 2.f), knightBounds.position.y + (shrinkY / 2.f)),
+                sf::Vector2f(boundsSize.x - shrinkX, boundsSize.y - shrinkY)
+            );  //og value x = 10.f y=15.f
+            
             timeTracker += deltaTime;
+
+
             for(auto& obstacles: obstacles)
             {
                 if(knightBounds.findIntersection(obstacles.obstacleBounds).has_value())
@@ -270,19 +303,19 @@ class Knight
             if(!playerDead)
             {
                 walk();
-                if(sf::Keyboard::isKeyPressed(sf::Keyboard::Key::Space) == true && knightPos.y >= windowSize_y - 150.f)
+                if(sf::Keyboard::isKeyPressed(sf::Keyboard::Key::Space) == true && knightPos.y >= groundLevel)
                 {
                     animationCounter = 0;
                     knightMotion.y = -20.f; knight->setTextureRect(frames[1]);
                     if(soundManager.jumpSound) soundManager.jumpSound->play();
                 }
-                if(knightPos.y < windowSize_y - 150.f)
+                if(knightPos.y < groundLevel)
                 {
                     knightMotion.y += 1.f; knight->setTextureRect(frames[1]);
                 }
-                if(knightPos.y > windowSize_y - 150.f)
+                if(knightPos.y > groundLevel)
                 {
-                    knight->setPosition(sf::Vector2f(knight->getPosition().x, windowSize_y - 150.f));
+                    knight->setPosition(sf::Vector2f(knight->getPosition().x, groundLevel));
                     knightMotion.y = 0.f;
                 }
                 knight->move(knightMotion);
@@ -290,31 +323,21 @@ class Knight
             if(playerDead == true)
             {
                 knightMotion.y = 0.f;
-                knight->setTextureRect(frames[3]);
-                if(timeTracker.asMilliseconds() > 170.f)
+                //knight->setTextureRect(frames[3]);
+                if(soundManager.dieSound && !dieSoundPlayed)
                 {
-                    if(soundManager.dieSound) soundManager.dieSound->stop();
-                    if(soundManager.dieSound) soundManager.dieSound->setLooping(false);
-                    timeTracker = sf::Time::Zero;
+                    soundManager.dieSound->setLooping(false);
+                    soundManager.dieSound->play();
+                    dieSoundPlayed = true;
                 }
-                else
-                {
-                    if(soundManager.dieSound) soundManager.dieSound->play();
-                }
+                
             }
         }
 
         void walk()
         {
-            for(int i = 0; i < frames.size() - 3; i++)
-            {
-                if(animationCounter == (i + 1) * 3)
-                    knight->setTextureRect(frames[i]);
-            }
-
-            if(animationCounter >= (frames.size() - 2) * 3)
-                animationCounter = 0;
-
+            int frameIndex = (animationCounter / 3) % frames.size();
+            knight->setTextureRect(frames[frameIndex]);
             animationCounter++;
         }
 
@@ -322,9 +345,13 @@ class Knight
         {
             knightMotion.y = 0;
             if (knight)
-                knight->setPosition(sf::Vector2f(windowSize_x / 2.f - windowSize_x / 4.f, windowSize_y - 150.f));
+                knight->setPosition(sf::Vector2f(windowSize_x / 2.f - windowSize_x / 4.f, groundLevel));
+                //knight->setPosition(sf::Vector2f(windowSize_x / 2.f - windowSize_x / 4.f, 250.f));
             knight->setTextureRect(frames[0]);
             animationCounter = 0;
+
+            dieSoundPlayed = false;
+            playerDead = false;
         }
 };
 
@@ -508,7 +535,7 @@ class GameState
             gameOverText->setString("Game Over");
             gameOverText->setCharacterSize(40);
             if (knight.knight)
-                knight.knight->setPosition(sf::Vector2f(windowSize_x/2.f - windowSize_x/4.f, windowSize_y - 150.f));
+                knight.knight->setPosition(sf::Vector2f(windowSize_x/2.f - windowSize_x/4.f, groundLevel));
             if (gameOverText)
             {
                 sf::FloatRect textBounds = gameOverText->getGlobalBounds();
