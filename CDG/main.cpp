@@ -33,4 +33,5 @@ int main()
         gamestate.drawTo(window);
         window.display();
     }
+    return 0;
 }

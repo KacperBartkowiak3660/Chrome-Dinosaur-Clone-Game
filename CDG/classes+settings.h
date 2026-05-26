@@ -66,9 +66,14 @@ class SoundManager
         sf::SoundBuffer dieBuffer;
         sf::SoundBuffer jumpBuffer;
         sf::SoundBuffer pointBuffer;
+        sf::SoundBuffer cooldownBuffer;
+        sf::SoundBuffer dashBuffer;
         std::optional<sf::Sound> dieSound;
         std::optional<sf::Sound> jumpSound;
         std::optional<sf::Sound> pointSound;
+        std::optional<sf::Sound> cooldownSound;
+        std::optional<sf::Sound> dashSound;
+
 
         SoundManager()
         {
@@ -78,6 +83,10 @@ class SoundManager
                 jumpSound.emplace(jumpBuffer);
             if(pointBuffer.loadFromFile("C:/Users/bkacp/Desktop/CDG/Assets/point.wav"))
                 pointSound.emplace(pointBuffer);
+            if(cooldownBuffer.loadFromFile("C:/Users/bkacp/Desktop/CDG/Assets/cooldown.wav"))
+                cooldownSound.emplace(cooldownBuffer);
+            if(dashBuffer.loadFromFile("C:/Users/bkacp/Desktop/CDG/Assets/dash.wav"))
+                dashSound.emplace(dashBuffer);
         }
 };
 
@@ -342,37 +351,154 @@ class Knight
         std::optional<sf::Sprite> knight;
         sf::Vector2f knightPos{0.f, 0.f};
         sf::Vector2f knightMotion{0.f, 0.f};
-        sf::Texture knightTex;
+        //sf::Texture knightTex;
         sf::FloatRect knightBounds;
         SoundManager soundManager;
-        std::array<sf::IntRect, 8> frames;
+        //std::array<sf::IntRect, 8> frames;
         sf::Time timeTracker;
         int animationCounter{0};
         bool dieSoundPlayed = false;
+        bool dashReadySoundPlayed = false;
+
+        // --- STATE ENGINE CONTROLS ---
+        enum class KnightState { Normal, Dashing, Dead };
+        KnightState currentState = KnightState::Normal;
+
+        // --- MULTI-PNG TEXTURE SYSTEM ---
+        sf::Texture walkSheet; //original
+        sf::Texture jumpSheet; //jump
+        sf::Texture dashSheet; //dash
+        sf::Texture deathSheet; //death
+        sf::Texture* activeTexture{nullptr}; // point to active texture
+
+        // --- DISTINCT FRAME STORAGE LAYOUTS ---
+        std::array<sf::IntRect, 8> walkFrames; // replaced "frames"
+        std::array<sf::IntRect, 5> jumpFrames; 
+        std::array<sf::IntRect, 6> dashFrames;
+        std::array<sf::IntRect, 12> deathFrames;
+
+        // --- MECHANICS PARAMETERS ---
+        sf::Time dashTimer = sf::Time::Zero;
+        sf::Time dashDuration = sf::seconds(0.2f);
+        sf::Vector2f dashDirection{0.f , 0.f};
+        float dashSpeed = 25.f;
+        bool isInvincible = false;
+        sf::Time dashCooldownTimer = sf::seconds(10.f);
+        sf::Time dashCooldownDuration = sf::seconds(10.f);
+        bool isDashReady = true;
+
+        bool pendingPowerUpRoll = false;
+
+        // Dynamic Death Physics variables
+        float deathSlideSpeed = 0.f;
+        float friction = 0.95f;
+        float deathAnimDelay = 0.08f;
+        sf::Time deathAnimTimer = sf::Time::Zero;
+
 
         Knight()
         {
-            if(knightTex.loadFromFile("C:/Users/bkacp/Desktop/CDG/Assets/PlayerSpriteSheet.png"))
+            // 1. Load all 4 files safely
+            if(!walkSheet.loadFromFile("C:/Users/bkacp/Desktop/CDG/Assets/PlayerSpriteSheet.png") ||
+               !jumpSheet.loadFromFile("C:/Users/bkacp/Desktop/CDG/Assets/KnightJump.png") ||
+               !dashSheet.loadFromFile("C:/Users/bkacp/Desktop/CDG/Assets/KnightDash.png") ||
+               !deathSheet.loadFromFile("C:/Users/bkacp/Desktop/CDG/Assets/KnightDeath.png"))
             {
-                
-                knight.emplace(knightTex);
-
-                knight->setScale(sf::Vector2f(2, 2));//rozmiar
-
-                for(int i = 0; i < frames.size(); i++){
-                    frames[i] = sf::IntRect(sf::Vector2i(i * 96, 0), sf::Vector2i(96, 84));
-                }
-                knight->setTextureRect(frames[0]);
-                knightPos = knight->getPosition();
+                std::cout<<"Error loading one or more Knight texture sheets!"<<std::endl;
             }
-            else
+             
+            // 2. Initialize your core sprite container
+            activeTexture = &walkSheet;
+            knight.emplace(*activeTexture);
+            knight->setScale(sf::Vector2f(2,2));
+
+            // 3. Slice Walking Sheets
+            for(int i = 0; i < walkFrames.size(); i++)
             {
-                std::cout << "Error loading the PlayerSprite texture" << std::endl;
+                walkFrames[i] = sf::IntRect(sf::Vector2i(i * 96, 0), sf::Vector2i(96, 84));
+            }
+
+            // 4. Slice Jumping Sheets
+            for(int i = 0; i < jumpFrames.size(); i++)
+            {
+                jumpFrames[i] = sf::IntRect(sf::Vector2i(i * 96, 0), sf::Vector2i(96, 84));
+            }
+
+            // 5. Slice Dashing Sheets
+            for(int i = 0; i < dashFrames.size(); i++)
+            {
+                dashFrames[i] = sf::IntRect(sf::Vector2i(i * 96, 0), sf::Vector2i(96, 84));
+            }
+
+            // 6. Slice Death Sheets
+            for(int i = 0; i < deathFrames.size(); i++)
+            {
+                deathFrames[i] = sf::IntRect(sf::Vector2i(i * 96, 0), sf::Vector2i(96, 84));
+            }
+
+            // 7. Establish Startup Defaults
+            knight->setTextureRect(walkFrames[0]);
+            knightPos = knight->getPosition();
+
+        }
+
+        void handleDashInput (sf::Vector2f mousePos)
+        {
+            // Check if 10 seconds of real-time have passed since the last dash lock
+            isDashReady = (dashCooldownTimer >= dashCooldownDuration);
+
+            if(currentState == KnightState::Normal && isDashReady && sf::Mouse::isButtonPressed(sf::Mouse::Button::Right))
+            {
+                sf::Vector2f targetVector;
+
+                if (mousePos.x > knightPos.x)
+                {
+                    // MOUSE IS TO THE RIGHT: Dash towards cursor (allows vertical)
+                    targetVector = mousePos - knightPos;
+                }
+                else
+                {
+                    // MOUSE IS TO THE LEFT: Lock X to knight, follow mouse Y
+                    sf::Vector2f adjustedTarget = sf::Vector2f(knightPos.x, mousePos.y);
+                    targetVector = adjustedTarget - knightPos;
+                }
+
+                float length = std::sqrt(targetVector.x * targetVector.x + targetVector.y * targetVector.y);
+                if(length != 0.f)
+                {
+                    dashDirection = targetVector / length;
+                }
+                else
+                {
+                    dashDirection = sf::Vector2f(1.f, 0.f);
+                }
+
+                currentState = KnightState::Dashing;
+                isInvincible = true;
+                dashTimer = sf::Time::Zero;
+                animationCounter = 0; 
+                
+                // LOCK THE COOLDOWN: Reset the time counter to 0 seconds
+                dashCooldownTimer = sf::Time::Zero;
+
+                if (soundManager.dashSound)
+                {
+                    soundManager.dashSound->play();
+                }
+
+                // --- RESET READY SOUND GATE ---
+                dashReadySoundPlayed = false;
+
+                activeTexture = &dashSheet;
+                knight->setTexture(*activeTexture);
+                knight->setTextureRect(dashFrames[0]);
             }
         }
 
-        void update(sf::Time& deltaTime, std::vector<std::unique_ptr<Obstacle>>& obstacles)
+        void update(sf::Time& deltaTime, std::vector<std::unique_ptr<Obstacle>>& obstacles, sf::Vector2f mousePos)
         {
+            if(!knight) return;
+
             knightPos = knight->getPosition();
             knightBounds = knight->getGlobalBounds();
             sf::Vector2f boundsSize = knightBounds.size;
@@ -383,72 +509,250 @@ class Knight
             knightBounds = sf::FloatRect(
                 sf::Vector2f(knightBounds.position.x + (shrinkX / 2.f), knightBounds.position.y + (shrinkY / 2.f)),
                 sf::Vector2f(boundsSize.x - shrinkX, boundsSize.y - shrinkY)
-            );  //og value x = 10.f y=15.f
+            ); 
             
             timeTracker += deltaTime;
 
-
-            for(const auto& obstacles: obstacles)
-            {
-                if(knightBounds.findIntersection(obstacles->obstacleBounds).has_value())
-                {
-                    playerDead = true;
-                }
-            }
+            // --- TICK THE COOLDOWN CLOCK ---
             if(!playerDead)
             {
-                walk();
-                if(sf::Keyboard::isKeyPressed(sf::Keyboard::Key::Space) == true && knightPos.y >= groundLevel)
+                dashCooldownTimer += deltaTime; // Constantly count up towards 10 seconds
+
+                if (dashCooldownTimer >= dashCooldownDuration)
                 {
-                    animationCounter = 0;
-                    knightMotion.y = -20.f; knight->setTextureRect(frames[1]);
-                    if(soundManager.jumpSound) soundManager.jumpSound->play();
+                    if (!dashReadySoundPlayed)
+                    {
+                        if (soundManager.cooldownSound)
+                        {
+                            soundManager.cooldownSound->play();
+                        }
+                        dashReadySoundPlayed = true; // Lock the gate so it plays exactly once
+                    }
                 }
-                if(knightPos.y < groundLevel)
+
+                handleDashInput(mousePos);      // Run input check
+            }
+
+            // ADVANCED COLLISION LOOP
+            if(currentState != KnightState::Dead)
+            {
+                for(size_t i = 0; i < obstacles.size(); i++)
                 {
-                    knightMotion.y += 1.f; knight->setTextureRect(frames[1]);
+                    if(knightBounds.findIntersection(obstacles[i]->obstacleBounds).has_value())
+                    {
+                        if(isInvincible)
+                        {
+                            obstacles.erase(obstacles.begin() + i);
+                            i--; 
+
+                            if((rand() % 100) + 1 <= 10)
+                            {
+                                std::cout << "Power-up Drop Rolled Successfully!" << std::endl;
+                            }
+                        }
+                        else
+                        {
+                            playerDead = true;
+                            currentState = KnightState::Dead;
+                            animationCounter = 0;
+                            deathAnimTimer = sf::Time::Zero;
+
+                            activeTexture = &deathSheet;
+                            knight->setTexture(*activeTexture);
+                            knight->setTextureRect(deathFrames[0]);
+
+                            deathSlideSpeed = gameSpeed; 
+                            //knightMotion = sf::Vector2f(0.f, knightMotion.y); // Keep X at 0 so screen stops around him
+                            gameSpeed = 0.f;
+                        }
+                    }
                 }
-                if(knightPos.y > groundLevel)
+            }
+
+            // ===========================================================
+            // STATE MACHINE CONTROLS
+            // ===========================================================
+            
+            // --- BRANCH A: DASHING (Camera Tracking Simulation) ---
+            if(!playerDead && currentState == KnightState::Dashing)
+            {
+                dashTimer += deltaTime;
+
+                // SCREEN MOVEMENT FIX: 
+                // We set his horizontal speed to 0 so he doesn't leave his spot on screen.
+                // Instead, we multiply your global gameSpeed so the world flies past him!
+                knightMotion.x = 0.f; 
+                knightMotion.y = dashDirection.y * dashSpeed; // Allow vertical diving/climbing
+                
+                // Dynamically adjust the global scrolling speed to simulate high momentum
+                gameSpeed = 35.f; 
+
+                // Run Dash Animation Loop (Using your new array size: 6)
+                int dashFrameIndex = (animationCounter / 3) % dashFrames.size();
+                knight->setTextureRect(dashFrames[dashFrameIndex]);
+                animationCounter++;
+
+                // Handle landing limits mid-dash so he doesn't clip through floor
+                if(knightPos.y >= groundLevel && knightMotion.y > 0.f)
+                {
+                    knight->setPosition(sf::Vector2f(knightPos.x, groundLevel));
+                    knightMotion.y = 0.f;
+                }
+
+                if(dashTimer >= dashDuration)
+                {
+                    currentState = KnightState::Normal;
+                    isInvincible = false;
+                    knightMotion = sf::Vector2f(0.f, 0.f);
+                    gameSpeed = 8.f; // Revert game speed to standard configuration
+                }
+
+                knight->move(knightMotion);
+            }
+            // --- BRANCH B: NORMAL RUNNING / JUMPING PIPELINES ---
+            else if(!playerDead && currentState == KnightState::Normal)
+            {
+                knightMotion.x = 0.f; // Keep horizontal locked in place
+
+                if(knightPos.y >= groundLevel)
                 {
                     knight->setPosition(sf::Vector2f(knight->getPosition().x, groundLevel));
                     knightMotion.y = 0.f;
+
+                    if(activeTexture != &walkSheet)
+                    {
+                        activeTexture = &walkSheet;
+                        knight->setTexture(*activeTexture);
+                        animationCounter = 0;
+                    }
+
+                    walk();
+
+                    if(sf::Keyboard::isKeyPressed(sf::Keyboard::Key::Space) == true)
+                    {
+                        animationCounter = 0;
+                        knightMotion.y = -20.f; 
+                        
+                        activeTexture = &jumpSheet;
+                        knight->setTexture(*activeTexture);
+                        knight->setTextureRect(jumpFrames[0]);
+                        
+                        if(soundManager.jumpSound) soundManager.jumpSound->play();
+                    }
                 }
+                else if(knightPos.y < groundLevel)
+                {
+                    knightMotion.y += 1.f; // Gravity pulling the knight down
+                    
+                    if(activeTexture != &jumpSheet)
+                    {
+                        activeTexture = &jumpSheet;
+                        knight->setTexture(*activeTexture);
+                    }
+
+                    // --- PHYSICS-BASED JUMP ANIMATION ---
+                    // Instead of using animationCounter, we look at knightMotion.y to pick the frame!
+                    int jumpFrameIndex = 2; // Default to Frame 2 (The peak/weightless frame)
+
+                    if (knightMotion.y < -12.f)      jumpFrameIndex = 0; // Fast Rising
+                    else if (knightMotion.y < -3.f)  jumpFrameIndex = 1; // Slowing down near peak
+                    else if (knightMotion.y > 12.f)  jumpFrameIndex = 4; // Fast Falling
+                    else if (knightMotion.y > 3.f)   jumpFrameIndex = 3; // Beginning to fall
+
+                    // Apply the frame safely
+                    knight->setTextureRect(jumpFrames[jumpFrameIndex]);
+                }
+
                 knight->move(knightMotion);
             }
-            if(playerDead == true)
+            // --- BRANCH C: DEATH PROCESS (Using your new 12 frames container) ---
+            else if(currentState == KnightState::Dead)
             {
-                knightMotion.y = 0.f;
-                //knight->setTextureRect(frames[3]);
+                if(knightPos.y < groundLevel)
+                {
+                    knightMotion.y += 1.f;
+                }
+                else
+                {
+                    knight->setPosition(sf::Vector2f(knight->getPosition().x, groundLevel));
+                    knightMotion.y = 0.f;
+
+                    deathSlideSpeed *= friction;
+                    if(deathSlideSpeed < 0.1f) deathSlideSpeed = 0.f;
+                }
+
+                // The background handles sliding past him when dead; player stays centered
+                knightMotion.x = deathSlideSpeed;
+
+                // Animating through your expanded 12 death frames
+                deathAnimTimer += deltaTime;
+                if(deathSlideSpeed > 0.f)
+                {
+                    deathAnimDelay = 0.05f + (1.f / (deathSlideSpeed + 1.f)) * 0.12f;
+                }
+                else
+                {
+                    deathAnimDelay = 0.20f; 
+                }
+
+                if(deathAnimTimer.asSeconds() > deathAnimDelay)
+                {
+                    // Protect your new array capacity ceiling limit (12 - 1 = 11)
+                    if(animationCounter < deathFrames.size() - 1)
+                    {
+                        animationCounter++;
+                        knight->setTextureRect(deathFrames[animationCounter]);
+                    }
+                    deathAnimTimer = sf::Time::Zero;
+                }
+
+                knight->move(knightMotion);
+
                 if(soundManager.dieSound && !dieSoundPlayed)
                 {
                     soundManager.dieSound->setLooping(false);
                     soundManager.dieSound->play();
                     dieSoundPlayed = true;
                 }
-                
             }
         }
 
+ 
+
         void walk()
         {
-            int frameIndex = (animationCounter / 3) % frames.size();
-            knight->setTextureRect(frames[frameIndex]);
+            int frameIndex = (animationCounter / 3) % walkFrames.size();
+            knight->setTextureRect(walkFrames[frameIndex]);
             animationCounter++;
         }
 
         void reset()
         {
-            knightMotion.y = 0;
-            if (knight)
-                knight->setPosition(sf::Vector2f(windowSize_x / 2.f - windowSize_x / 4.f, groundLevel));
-                //knight->setPosition(sf::Vector2f(windowSize_x / 2.f - windowSize_x / 4.f, 250.f));
-            knight->setTextureRect(frames[0]);
+            knightMotion = sf::Vector2f(0.f, 0.f);
+            currentState = KnightState::Normal;
+            isInvincible = false;
+            dashTimer = sf::Time::Zero;
             animationCounter = 0;
+            deathSlideSpeed = 0.f;
+            
+            // Give the player a full charge immediately on game reset
+            dashCooldownTimer = sf::seconds(10.f); 
+
+            dashReadySoundPlayed = true;
+
+            if (knight)
+            {
+                knight->setPosition(sf::Vector2f(windowSize_x / 2.f - windowSize_x / 4.f, groundLevel));
+                activeTexture = &walkSheet;
+                knight->setTexture(*activeTexture);
+                knight->setTextureRect(walkFrames[0]);
+            }
 
             dieSoundPlayed = false;
             playerDead = false;
         }
 };
+
 
 class Scores
 {
@@ -650,7 +954,9 @@ class GameState
         {
             if (restartButton.restartButtonSprite)
                 restartButton.restartButtonSpriteBounds = restartButton.restartButtonSprite->getGlobalBounds();
+
             restartButton.checkPressed = sf::Mouse::isButtonPressed(sf::Mouse::Button::Left);
+
             if(playerDead == true && restartButton.restartButtonSpriteBounds.contains(mousePos) && restartButton.checkPressed == true)
             {
                 ground.reset();
@@ -665,10 +971,12 @@ class GameState
             {
                 ground.updateGround();
                 obstacles.update(deltaTime);
-                knight.update(deltaTime, obstacles.obstacles);
                 clouds.updateClouds(deltaTime);
                 scores.update();
             }
+
+            knight.update(deltaTime, obstacles.obstacles, mousePos);
+
             fps.update();
         }
 
