@@ -10,6 +10,8 @@
 #include <SFML/Audio.hpp>
 #include <optional>
 
+class Knight;
+
 const unsigned int windowSize_x = 1000;
 const unsigned int windowSize_y = 500;
 const unsigned int groundOffset = windowSize_y - 150.f;
@@ -17,6 +19,8 @@ float groundLevel = windowSize_y - 175.f;
 int gameSpeed = 8;
 bool playerDead = false;
 bool playDeadSound = false; 
+sf::Time dashCooldownDuration = sf::seconds(10.f);
+int helpGameSpeed = gameSpeed;
 
 struct Fps_s
 {
@@ -68,11 +72,22 @@ class SoundManager
         sf::SoundBuffer pointBuffer;
         sf::SoundBuffer cooldownBuffer;
         sf::SoundBuffer dashBuffer;
+
+        //Power up sounds
+        sf::SoundBuffer pickupSlowBuffer;
+        sf::SoundBuffer pickupCooldownBuffer;
+        sf::SoundBuffer slowEndBuffer;
+
         std::optional<sf::Sound> dieSound;
         std::optional<sf::Sound> jumpSound;
         std::optional<sf::Sound> pointSound;
         std::optional<sf::Sound> cooldownSound;
         std::optional<sf::Sound> dashSound;
+
+        //Power up sounds
+        std::optional<sf::Sound> pickupSlowSound;
+        std::optional<sf::Sound> pickupCooldownSound;
+        std::optional<sf::Sound> slowEndSound;
 
 
         SoundManager()
@@ -87,6 +102,91 @@ class SoundManager
                 cooldownSound.emplace(cooldownBuffer);
             if(dashBuffer.loadFromFile("C:/Users/bkacp/Desktop/CDG/Assets/dash.wav"))
                 dashSound.emplace(dashBuffer);
+            if(pickupSlowBuffer.loadFromFile("C:/Users/bkacp/Desktop/CDG/Assets/pickupSlow.wav"))
+                pickupSlowSound.emplace(pickupSlowBuffer);
+            if(pickupCooldownBuffer.loadFromFile("C:/Users/bkacp/Desktop/CDG/Assets/pickupCooldown.wav"))
+                pickupCooldownSound.emplace(pickupCooldownBuffer);
+            if(slowEndBuffer.loadFromFile("C:/Users/bkacp/Desktop/CDG/Assets/slowEnd.wav"))
+                slowEndSound.emplace(slowEndBuffer);
+        }
+};
+
+enum class PowerUpType { SlowDown, CooldownReduction };
+
+class InstantPowerUp
+{
+    protected:
+        float duration;
+        float elapsed{0.f};
+        bool isExpired{false};
+        PowerUpType type;
+
+    public:
+        InstantPowerUp(float secDuration, PowerUpType pType) 
+            : duration(secDuration), type(pType) {}
+        
+        virtual ~InstantPowerUp() = default;
+
+        virtual void onApply(Knight& knight) = 0;
+        virtual void onUpdate(Knight& knight, sf::Time deltaTime) = 0;
+        virtual void onClear(Knight& knight) = 0;
+
+        void refresh() { elapsed = 0.f; }
+        bool checkExpired() const { return isExpired; }
+        PowerUpType getType() const { return type; }
+};
+
+class ActiveSlowDown : public InstantPowerUp 
+{
+    private:
+        SoundManager& sm;
+    public:
+        ActiveSlowDown(SoundManager& soundMgr) 
+            : InstantPowerUp(5.f, PowerUpType::SlowDown), sm(soundMgr) {}
+
+        void onApply(Knight& knight) override {
+            gameSpeed -= 2; 
+            if (sm.pickupSlowSound) sm.pickupSlowSound->play();
+        }
+
+        void onUpdate(Knight& knight, sf::Time deltaTime) override {
+            elapsed += deltaTime.asSeconds();
+            if (elapsed >= duration) {
+                isExpired = true;
+            }
+        }
+
+        void onClear(Knight& knight) override {
+            gameSpeed += 2 ; 
+            if (sm.slowEndSound) sm.slowEndSound->play();
+        }
+};
+
+class ActiveCooldownReduction : public InstantPowerUp 
+{
+    private:
+        SoundManager& sm;
+    public:
+        ActiveCooldownReduction(SoundManager& soundMgr) 
+            : InstantPowerUp(10.f, PowerUpType::CooldownReduction), sm(soundMgr) {}
+
+        void onApply(Knight& knight) override {
+            // Fixes the undefined error by routing it directly through the knight reference!
+            dashCooldownDuration = sf::seconds(1.f); 
+            if (sm.pickupCooldownSound) sm.pickupCooldownSound->play();
+        }
+
+        void onUpdate(Knight& knight, sf::Time deltaTime) override {
+            elapsed += deltaTime.asSeconds();
+            dashCooldownDuration = sf::seconds(1.f); 
+            
+            if (elapsed >= duration) {
+                isExpired = true;
+            }
+        }
+
+        void onClear(Knight& knight) override {
+            dashCooldownDuration = sf::seconds(10.f); 
         }
 };
 
@@ -384,8 +484,8 @@ class Knight
         float dashSpeed = 25.f;
         bool isInvincible = false;
         sf::Time dashCooldownTimer = sf::seconds(10.f);
-        sf::Time dashCooldownDuration = sf::seconds(10.f);
         bool isDashReady = true;
+        float speedBeforeDash = 8.f;
 
         bool pendingPowerUpRoll = false;
 
@@ -394,6 +494,9 @@ class Knight
         float friction = 0.95f;
         float deathAnimDelay = 0.08f;
         sf::Time deathAnimTimer = sf::Time::Zero;
+
+        // Power Ups
+        std::vector<std::unique_ptr<InstantPowerUp>> activePowerUps;
 
 
         Knight()
@@ -449,6 +552,8 @@ class Knight
 
             if(currentState == KnightState::Normal && isDashReady && sf::Mouse::isButtonPressed(sf::Mouse::Button::Right))
             {
+                speedBeforeDash = gameSpeed;
+
                 sf::Vector2f targetVector;
 
                 if (mousePos.x > knightPos.x)
@@ -516,23 +621,33 @@ class Knight
             // --- TICK THE COOLDOWN CLOCK ---
             if(!playerDead)
             {
-                dashCooldownTimer += deltaTime; // Constantly count up towards 10 seconds
+                dashCooldownTimer += deltaTime; // Standard time counting
 
+                // 🔄 REFRESH ENGINE FOR RUNNING POWERUPS
+                for (size_t i = 0; i < activePowerUps.size(); i++)
+                {
+                    activePowerUps[i]->onUpdate(*this, deltaTime);
+
+                    if (activePowerUps[i]->checkExpired())
+                    {
+                        activePowerUps[i]->onClear(*this); // Restore game parameters / play end audio
+                        activePowerUps.erase(activePowerUps.begin() + i); // Clear class memory
+                        i--;
+                    }
+                }
+
+                // Cooldown Alarm Trigger
                 if (dashCooldownTimer >= dashCooldownDuration)
                 {
                     if (!dashReadySoundPlayed)
                     {
-                        if (soundManager.cooldownSound)
-                        {
-                            soundManager.cooldownSound->play();
-                        }
-                        dashReadySoundPlayed = true; // Lock the gate so it plays exactly once
+                        if (soundManager.cooldownSound) soundManager.cooldownSound->play();
+                        dashReadySoundPlayed = true; 
                     }
                 }
 
-                handleDashInput(mousePos);      // Run input check
+                handleDashInput(mousePos);
             }
-
             // ADVANCED COLLISION LOOP
             if(currentState != KnightState::Dead)
             {
@@ -540,18 +655,63 @@ class Knight
                 {
                     if(knightBounds.findIntersection(obstacles[i]->obstacleBounds).has_value())
                     {
-                        if(isInvincible)
+                        if(isInvincible) // True during active dash state
                         {
                             obstacles.erase(obstacles.begin() + i);
                             i--; 
 
-                            if((rand() % 100) + 1 <= 10)
+                            if (soundManager.dashSound) soundManager.dashSound->play();
+
+                            // 🎲 10% BASE PROC CHANCE
+                            if((rand() % 100) + 1 <= 100) // last 10/100 100-> debug 100% chance
                             {
-                                std::cout << "Power-up Drop Rolled Successfully!" << std::endl;
+                                std::cout << "[DEBUG] Power-up Dropped! Rolling type now..." << std::endl;
+                                //std::cout << "[DEBUG] Power-up Dropped! (Guaranteed 100%)" << std::endl;
+                                // 🎲 50/50 SPLIT SELECTOR
+                                // 🎲 50/50 SPLIT SELECTOR
+                                PowerUpType rolledType = (rand() % 2 == 0) ? PowerUpType::SlowDown : PowerUpType::CooldownReduction;
+                                bool alreadyRunning = false;
+
+                                // Check if this specific child class modifier is already running
+                                for(auto& p : activePowerUps)
+                                {
+                                    if(p->getType() == rolledType)
+                                    {
+                                        p->refresh(); // Refresh running duration clock back to zero
+                                        alreadyRunning = true;
+
+                                        std::cout << " -> Duplicate type found! Refreshed running duration." << std::endl;
+                                        
+                                        // Play pickup sound again to acknowledge the refresh reset
+                                        if(rolledType == PowerUpType::SlowDown && soundManager.pickupSlowSound) 
+                                            soundManager.pickupSlowSound->play();
+                                        if(rolledType == PowerUpType::CooldownReduction && soundManager.pickupCooldownSound) 
+                                            soundManager.pickupCooldownSound->play();
+                                        
+                                        break;
+                                    }
+                                }
+
+                                // If it's a completely fresh buff activation
+                                if(!alreadyRunning)
+                                {
+                                    std::cout << " -> Fresh power-up applied directly to Knight!" << std::endl;
+
+                                    std::unique_ptr<InstantPowerUp> newBuff;
+                                    
+                                    if(rolledType == PowerUpType::SlowDown)
+                                        newBuff = std::make_unique<ActiveSlowDown>(soundManager);
+                                    else
+                                        newBuff = std::make_unique<ActiveCooldownReduction>(soundManager);
+
+                                    newBuff->onApply(*this); // Fire off the startup metrics and audio chime
+                                    activePowerUps.push_back(std::move(newBuff));
+                                }
                             }
                         }
                         else
                         {
+                            // CRITICAL COLLISION: Drop out of loops to slide and die
                             playerDead = true;
                             currentState = KnightState::Dead;
                             animationCounter = 0;
@@ -562,8 +722,7 @@ class Knight
                             knight->setTextureRect(deathFrames[0]);
 
                             deathSlideSpeed = gameSpeed; 
-                            //knightMotion = sf::Vector2f(0.f, knightMotion.y); // Keep X at 0 so screen stops around him
-                            gameSpeed = 0.f;
+                            gameSpeed = 0.f; 
                         }
                     }
                 }
@@ -604,7 +763,15 @@ class Knight
                     currentState = KnightState::Normal;
                     isInvincible = false;
                     knightMotion = sf::Vector2f(0.f, 0.f);
-                    gameSpeed = 8.f; // Revert game speed to standard configuration
+                    // Revert game speed to pre-dash speed, then apply slowdown modifier if active
+                    gameSpeed = speedBeforeDash;
+                    bool slowActive = false;
+                    for (auto& p : activePowerUps) {
+                        if (p->getType() == PowerUpType::SlowDown) { slowActive = true; break; }
+                    }
+                    if (slowActive) {
+                        gameSpeed -= 2;  // Apply slowdown to the reverted speed
+                    }
                 }
 
                 knight->move(knightMotion);
@@ -717,8 +884,6 @@ class Knight
             }
         }
 
- 
-
         void walk()
         {
             int frameIndex = (animationCounter / 3) % walkFrames.size();
@@ -735,10 +900,13 @@ class Knight
             animationCounter = 0;
             deathSlideSpeed = 0.f;
             
-            // Give the player a full charge immediately on game reset
             dashCooldownTimer = sf::seconds(10.f); 
+            dashReadySoundPlayed = true; 
 
-            dashReadySoundPlayed = true;
+            // --- PURGE ALL POLYNOMIAL BUFF CLASSES ---
+            activePowerUps.clear(); 
+            dashCooldownDuration = sf::seconds(10.f);
+            gameSpeed = 8.f; 
 
             if (knight)
             {
@@ -752,7 +920,6 @@ class Knight
             playerDead = false;
         }
 };
-
 
 class Scores
 {
@@ -807,6 +974,7 @@ class Scores
                 {
                     scoresInital += 100;
                     gameSpeed += 1;
+                    helpGameSpeed = gameSpeed;
                     if(soundManager.pointSound)
                         soundManager.pointSound->play();
                 }
@@ -814,6 +982,8 @@ class Scores
                 scoresText->setString(std::to_string(scores));
                 if(previousScoreText)
                     previousScoreText->setString(std::to_string(previousScore));
+
+            std::cout<< "[DEBUG] gameSpeed = "<<gameSpeed<<std::endl;
             }
         }
 
