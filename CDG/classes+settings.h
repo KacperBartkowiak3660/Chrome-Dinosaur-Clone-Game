@@ -461,7 +461,7 @@ class Knight
         bool dashReadySoundPlayed = false;
 
         // --- STATE ENGINE CONTROLS ---
-        enum class KnightState { Normal, Dashing, Dead };
+        enum class KnightState { Idle, Normal, Dashing, Dead };
         KnightState currentState = KnightState::Normal;
 
         // --- MULTI-PNG TEXTURE SYSTEM ---
@@ -469,6 +469,7 @@ class Knight
         sf::Texture jumpSheet; //jump
         sf::Texture dashSheet; //dash
         sf::Texture deathSheet; //death
+        sf::Texture idleSheet; //menu idle animation
         sf::Texture* activeTexture{nullptr}; // point to active texture
 
         // --- DISTINCT FRAME STORAGE LAYOUTS ---
@@ -476,6 +477,7 @@ class Knight
         std::array<sf::IntRect, 5> jumpFrames; 
         std::array<sf::IntRect, 6> dashFrames;
         std::array<sf::IntRect, 12> deathFrames;
+        std::array<sf::IntRect, 7> idleFrames;
 
         // --- MECHANICS PARAMETERS ---
         sf::Time dashTimer = sf::Time::Zero;
@@ -505,7 +507,8 @@ class Knight
             if(!walkSheet.loadFromFile("C:/Users/bkacp/Desktop/CDG/Assets/PlayerSpriteSheet.png") ||
                !jumpSheet.loadFromFile("C:/Users/bkacp/Desktop/CDG/Assets/KnightJump.png") ||
                !dashSheet.loadFromFile("C:/Users/bkacp/Desktop/CDG/Assets/KnightDash.png") ||
-               !deathSheet.loadFromFile("C:/Users/bkacp/Desktop/CDG/Assets/KnightDeath.png"))
+               !deathSheet.loadFromFile("C:/Users/bkacp/Desktop/CDG/Assets/KnightDeath.png") ||
+               !idleSheet.loadFromFile("C:/Users/bkacp/Desktop/CDG/Assets/IDLEplayer.png"))
             {
                 std::cout<<"Error loading one or more Knight texture sheets!"<<std::endl;
             }
@@ -539,7 +542,13 @@ class Knight
                 deathFrames[i] = sf::IntRect(sf::Vector2i(i * 96, 0), sf::Vector2i(96, 84));
             }
 
-            // 7. Establish Startup Defaults
+            // 7. Slice Idle Sheets
+            for(int i = 0; i < idleFrames.size(); i++)
+            {
+                idleFrames[i] = sf::IntRect(sf::Vector2i(i * 96, 0), sf::Vector2i(96, 84));
+            }
+
+            // 8. Establish Startup Defaults
             knight->setTextureRect(walkFrames[0]);
             knightPos = knight->getPosition();
 
@@ -600,7 +609,7 @@ class Knight
             }
         }
 
-        void update(sf::Time& deltaTime, std::vector<std::unique_ptr<Obstacle>>& obstacles, sf::Vector2f mousePos)
+        void update(sf::Time& deltaTime, std::vector<std::unique_ptr<Obstacle>>& obstacles, sf::Vector2f mousePos, bool allowInput = true)
         {
             if(!knight) return;
 
@@ -619,7 +628,7 @@ class Knight
             timeTracker += deltaTime;
 
             // --- TICK THE COOLDOWN CLOCK ---
-            if(!playerDead)
+            if(!playerDead && allowInput)
             {
                 dashCooldownTimer += deltaTime; // Standard time counting
 
@@ -649,7 +658,7 @@ class Knight
                 handleDashInput(mousePos);
             }
             // ADVANCED COLLISION LOOP
-            if(currentState != KnightState::Dead)
+            if(allowInput && currentState != KnightState::Dead)
             {
                 for(size_t i = 0; i < obstacles.size(); i++)
                 {
@@ -776,7 +785,29 @@ class Knight
 
                 knight->move(knightMotion);
             }
-            // --- BRANCH B: NORMAL RUNNING / JUMPING PIPELINES ---
+            // --- BRANCH B: IDLE MENU STATE ---
+            else if(!playerDead && currentState == KnightState::Idle)
+            {
+                knightMotion = sf::Vector2f(0.f, 0.f);
+
+                if(knightPos.y >= groundLevel)
+                {
+                    knight->setPosition(sf::Vector2f(knight->getPosition().x, groundLevel));
+                    knightMotion.y = 0.f;
+
+                    if(activeTexture != &idleSheet)
+                    {
+                        activeTexture = &idleSheet;
+                        knight->setTexture(*activeTexture);
+                        animationCounter = 0;
+                    }
+
+                    idle();
+                }
+
+                knight->move(knightMotion);
+            }
+            // --- BRANCH C: NORMAL RUNNING / JUMPING PIPELINES ---
             else if(!playerDead && currentState == KnightState::Normal)
             {
                 knightMotion.x = 0.f; // Keep horizontal locked in place
@@ -888,6 +919,13 @@ class Knight
         {
             int frameIndex = (animationCounter / 3) % walkFrames.size();
             knight->setTextureRect(walkFrames[frameIndex]);
+            animationCounter++;
+        }
+
+        void idle()
+        {
+            int frameIndex = (animationCounter / 4) % idleFrames.size();
+            knight->setTextureRect(idleFrames[frameIndex]);
             animationCounter++;
         }
 
@@ -1091,8 +1129,10 @@ class GameState
         Scores scores;
         Clouds clouds;
         RestartButton restartButton;
+        bool isGameStarted{false};
         sf::Font gameOverFont;
         std::optional<sf::Text> gameOverText;
+        std::optional<sf::Text> menuText;
         sf::Vector2f mousePos{0.f, 0.f};
 
         GameState()
@@ -1113,6 +1153,18 @@ class GameState
                 gameOverText->setPosition(sf::Vector2f(textX, textY));
                 gameOverText->setFillColor(sf::Color(83, 83, 83));
             }
+
+            isGameStarted = false;
+            gameSpeed = 0;
+            if(knight.knight)
+                knight.currentState = Knight::KnightState::Idle;
+
+            menuText.emplace(gameOverFont);
+            menuText->setString("PRESS SPACE TO BEGIN");
+            menuText->setCharacterSize(28);
+            sf::FloatRect menuBounds = menuText->getGlobalBounds();
+            menuText->setPosition(sf::Vector2f(windowSize_x / 2.f - menuBounds.size.x / 2.f, windowSize_y / 2.f - 100.f));
+            menuText->setFillColor(sf::Color(83, 83, 83));
         }
         void setMousPos(sf::Vector2i p_mousePos)
         {
@@ -1127,6 +1179,29 @@ class GameState
 
             restartButton.checkPressed = sf::Mouse::isButtonPressed(sf::Mouse::Button::Left);
 
+            if (!isGameStarted)
+            {
+                gameSpeed = 0;
+
+                knight.update(deltaTime, obstacles.obstacles, mousePos, false);
+                fps.update();
+
+                if (sf::Keyboard::isKeyPressed(sf::Keyboard::Key::Space))
+                {
+                    isGameStarted = true;
+                    gameSpeed = 8;
+                    knight.currentState = Knight::KnightState::Normal;
+                    if(knight.knight)
+                    {
+                        knight.activeTexture = &knight.walkSheet;
+                        knight.knight->setTexture(*knight.activeTexture);
+                        knight.knight->setTextureRect(knight.walkFrames[0]);
+                    }
+                }
+
+                return;
+            }
+
             if(playerDead == true && restartButton.restartButtonSpriteBounds.contains(mousePos) && restartButton.checkPressed == true)
             {
                 ground.reset();
@@ -1134,6 +1209,7 @@ class GameState
                 knight.reset();
                 scores.reset();
                 gameSpeed = 8;
+                isGameStarted = true;
 
                 playerDead = false;
             }
@@ -1152,6 +1228,17 @@ class GameState
 
         void drawTo(sf::RenderWindow& window)
         {
+            if(!isGameStarted)
+            {
+                clouds.drawTo(window);
+                if(ground.groundSprite) window.draw(*ground.groundSprite);
+                if(knight.knight) window.draw(*knight.knight);
+                if (menuText)
+                    window.draw(*menuText);
+                fps.drawTo(window);
+                return;
+            }
+
             if(playerDead == true)
             {
                 clouds.drawTo(window);
